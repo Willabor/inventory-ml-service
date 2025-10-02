@@ -29,8 +29,11 @@ COPY . .
 # Create models directory
 RUN mkdir -p models/cache
 
+# Make startup scripts executable
+RUN chmod +x startup.sh auto_train.py
+
 # Expose port (Railway will set $PORT dynamically)
 EXPOSE ${PORT:-8080}
 
-# Start command
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --log-level info
+# Start command - run startup script with auto-training
+CMD ["bash", "startup.sh"]
