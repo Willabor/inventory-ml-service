@@ -171,11 +171,11 @@ class SegmentationPredictor:
             WITH style_metrics AS (
                 SELECT
                     i.style_number,
-                    i.item_name,
-                    i.category,
-                    i.vendor_name,
-                    i.gender,
-                    (i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
+                    MAX(i.item_name) as item_name,
+                    MAX(i.category) as category,
+                    MAX(i.vendor_name) as vendor_name,
+                    MAX(i.gender) as gender,
+                    SUM(i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
                     AVG(i.order_cost::numeric) as avg_order_cost,
                     AVG(i.selling_price::numeric) as avg_selling_price,
                     AVG(CASE
@@ -188,7 +188,7 @@ class SegmentationPredictor:
                     COUNT(DISTINCT i.item_number) as receive_count
                 FROM item_list i
                 WHERE i.style_number IS NOT NULL
-                GROUP BY i.style_number, i.item_name, i.category, i.vendor_name, i.gender
+                GROUP BY i.style_number
             ),
             style_sales AS (
                 SELECT
@@ -223,8 +223,8 @@ class SegmentationPredictor:
                     ELSE 0
                 END as sales_velocity,
                 CASE
-                    WHEN AVG(sm.selling_price::numeric) > 0
-                    THEN AVG(sm.selling_price::numeric) - AVG(sm.order_cost::numeric)
+                    WHEN sm.avg_selling_price > 0
+                    THEN sm.avg_selling_price - sm.avg_order_cost
                     ELSE 0
                 END as margin_per_unit
             FROM style_metrics sm
@@ -232,7 +232,7 @@ class SegmentationPredictor:
             WHERE sm.total_active_qty > 0
         """.format(days_back=days_back)
 
-        data = db.query(query)
+        data = db.execute_query(query)
 
         if data.empty or len(data) < 10:
             raise ValueError("Insufficient data for training (need at least 10 products)")

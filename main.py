@@ -318,11 +318,11 @@ async def predict_product_segmentation():
             WITH style_metrics AS (
                 SELECT
                     i.style_number,
-                    i.item_name,
-                    i.category,
-                    i.vendor_name,
-                    i.gender,
-                    (i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
+                    MAX(i.item_name) as item_name,
+                    MAX(i.category) as category,
+                    MAX(i.vendor_name) as vendor_name,
+                    MAX(i.gender) as gender,
+                    SUM(i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
                     AVG(i.order_cost::numeric) as avg_order_cost,
                     AVG(i.selling_price::numeric) as avg_selling_price,
                     AVG(CASE
@@ -333,12 +333,12 @@ async def predict_product_segmentation():
                     SUM((i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) * i.order_cost::numeric) as inventory_value,
                     MAX(i.last_rcvd) as last_received,
                     COUNT(DISTINCT i.item_number) as receive_count,
-                    i.style_number_2 as classification,
+                    MAX(i.style_number_2) as classification,
                     'All-Season' as seasonal_pattern,
                     'Normal' as stock_status
                 FROM item_list i
                 WHERE i.style_number IS NOT NULL
-                GROUP BY i.style_number, i.item_name, i.category, i.vendor_name, i.gender, i.style_number_2
+                GROUP BY i.style_number
             ),
             style_sales AS (
                 SELECT
@@ -381,7 +381,7 @@ async def predict_product_segmentation():
             WHERE sm.total_active_qty > 0
         """
 
-        data = db.query(query)
+        data = db.execute_query(query)
 
         if data.empty:
             return {
@@ -453,34 +453,55 @@ async def predict_product_segmentation():
             }
             google_category = category_map.get(row.get('category', ''), category_map['default'])
 
+            import pandas as pd
+            import numpy as np
+
+            # Helper to safely convert to int, handling NaN
+            def safe_int(value, default=0):
+                if pd.isna(value) or value is None:
+                    return None if default is None else default
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return None if default is None else default
+
+            # Helper to safely convert to float
+            def safe_float(value, default=0.0):
+                if pd.isna(value) or value is None:
+                    return default
+                try:
+                    return float(value)
+                except (ValueError, TypeError):
+                    return default
+
             return {
                 'styleNumber': row['style_number'],
                 'itemName': row['item_name'],
                 'category': row.get('category'),
                 'vendorName': row.get('vendor_name'),
                 'gender': row.get('gender'),
-                'totalActiveQty': int(row.get('total_active_qty', 0)),
-                'avgOrderCost': float(row.get('avg_order_cost', 0)),
-                'avgSellingPrice': float(row.get('avg_selling_price', 0)),
-                'avgMarginPercent': float(row.get('avg_margin_percent', 0)),
-                'inventoryValue': float(row.get('inventory_value', 0)),
+                'totalActiveQty': safe_int(row.get('total_active_qty'), 0),
+                'avgOrderCost': safe_float(row.get('avg_order_cost'), 0),
+                'avgSellingPrice': safe_float(row.get('avg_selling_price'), 0),
+                'avgMarginPercent': safe_float(row.get('avg_margin_percent'), 0),
+                'inventoryValue': safe_float(row.get('inventory_value'), 0),
                 'classification': row.get('classification', 'Unknown'),
                 'seasonalPattern': row.get('seasonal_pattern', 'All-Season'),
-                'lastReceived': row.get('last_received').isoformat() if row.get('last_received') else None,
-                'daysSinceLastReceive': int(row.get('days_since_last_receive', 0)) if row.get('days_since_last_receive') else None,
-                'receiveCount': int(row.get('receive_count', 0)),
+                'lastReceived': row.get('last_received').isoformat() if row.get('last_received') and not pd.isna(row.get('last_received')) else None,
+                'daysSinceLastReceive': safe_int(row.get('days_since_last_receive'), None),
+                'receiveCount': safe_int(row.get('receive_count'), 0),
                 'stockStatus': row.get('stock_status', 'Normal'),
-                'unitsSold30d': int(row.get('units_sold_30d', 0)),
-                'unitsSold90d': int(row.get('units_sold_90d', 0)),
-                'salesVelocity': float(row.get('sales_velocity', 0)),
-                'lastSaleDate': row.get('last_sale_date').isoformat() if row.get('last_sale_date') else None,
+                'unitsSold30d': safe_int(row.get('units_sold_30d'), 0),
+                'unitsSold90d': safe_int(row.get('units_sold_90d'), 0),
+                'salesVelocity': safe_float(row.get('sales_velocity'), 0),
+                'lastSaleDate': row.get('last_sale_date').isoformat() if row.get('last_sale_date') and not pd.isna(row.get('last_sale_date')) else None,
                 'productTitle': product_title,
                 'keywords': keywords,
                 'googleCategory': google_category,
                 'priority': priority,
                 'budgetTier': budget_tier,
                 'segment': row['ml_segment'],
-                'marginPerUnit': float(row.get('margin_per_unit', 0)),
+                'marginPerUnit': safe_float(row.get('margin_per_unit'), 0),
             }
 
         # Organize by ML-predicted segments
