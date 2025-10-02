@@ -60,6 +60,12 @@ class TransferPredictionResponse(BaseModel):
 
 class TrainingRequest(BaseModel):
     days_back: int = 90
+    new_arrivals_days: Optional[int] = 60
+    best_seller_threshold: Optional[int] = 50
+    core_high_threshold: Optional[int] = 40
+    core_medium_threshold: Optional[int] = 20
+    core_low_threshold: Optional[int] = 6
+    clearance_days: Optional[int] = 180
 
 
 class TrainingResponse(BaseModel):
@@ -277,12 +283,19 @@ async def get_model_info():
 
 @app.post("/api/ml/train-segmentation")
 async def train_segmentation_model(request: TrainingRequest):
-    """Train the product segmentation model."""
+    """Train the product segmentation model with custom parameters."""
     global segmentation_model
 
     try:
-        # Initialize new model
-        segmentation_model = SegmentationPredictor()
+        # Initialize new model with custom thresholds
+        segmentation_model = SegmentationPredictor(
+            new_arrivals_days=request.new_arrivals_days,
+            best_seller_threshold=request.best_seller_threshold,
+            core_high_threshold=request.core_high_threshold,
+            core_medium_threshold=request.core_medium_threshold,
+            core_low_threshold=request.core_low_threshold,
+            clearance_days=request.clearance_days
+        )
 
         # Train the model
         metrics = segmentation_model.train(days_back=request.days_back)

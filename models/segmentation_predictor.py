@@ -25,13 +25,29 @@ from config import settings
 class SegmentationPredictor:
     """ML-powered product segmentation for Google Marketing campaigns."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        new_arrivals_days: int = 60,
+        best_seller_threshold: int = 50,
+        core_high_threshold: int = 40,
+        core_medium_threshold: int = 20,
+        core_low_threshold: int = 6,
+        clearance_days: int = 180
+    ):
         self.cluster_model: Optional[KMeans] = None
         self.classification_model: Optional[RandomForestClassifier] = None
         self.scaler: Optional[StandardScaler] = None
         self.model_version: str = ""
         self.training_date: Optional[datetime] = None
         self.metrics: Dict = {}
+
+        # Configurable classification thresholds
+        self.new_arrivals_days = new_arrivals_days
+        self.best_seller_threshold = best_seller_threshold
+        self.core_high_threshold = core_high_threshold
+        self.core_medium_threshold = core_medium_threshold
+        self.core_low_threshold = core_low_threshold
+        self.clearance_days = clearance_days
 
     def extract_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -85,51 +101,51 @@ class SegmentationPredictor:
 
     def assign_rule_based_segments(self, data: pd.DataFrame) -> pd.Series:
         """
-        Assign initial segment labels based on business rules.
+        Assign initial segment labels based on business rules (with configurable thresholds).
         These will be used for supervised training.
         """
         segments = pd.Series(['Unknown'] * len(data), index=data.index)
 
-        # Best Sellers: High sales + high frequency
+        # Best Sellers: High sales + high frequency (configurable threshold)
         best_seller_mask = (
+            (data['receive_count'] >= self.best_seller_threshold) &
             (data['units_sold_30d'] >= data['units_sold_30d'].quantile(0.9)) &
-            (data['receive_count'] >= 10) &
             (data['sales_velocity'] > 0.5)
         )
         segments[best_seller_mask] = 'Best Seller'
 
-        # Core High: Very high receive count
+        # Core High: Very high receive count (configurable threshold)
         core_high_mask = (
-            (data['receive_count'] >= 40) &
+            (data['receive_count'] >= self.core_high_threshold) &
             (~best_seller_mask)
         )
         segments[core_high_mask] = 'Core High'
 
-        # Core Medium: Medium-high receive count
+        # Core Medium: Medium-high receive count (configurable threshold)
         core_medium_mask = (
-            (data['receive_count'] >= 10) &
-            (data['receive_count'] < 40) &
+            (data['receive_count'] >= self.core_medium_threshold) &
+            (data['receive_count'] < self.core_high_threshold) &
             (~best_seller_mask)
         )
         segments[core_medium_mask] = 'Core Medium'
 
-        # Core Low: Low receive count but established
+        # Core Low: Low receive count but established (configurable threshold)
         core_low_mask = (
-            (data['receive_count'] >= 6) &
-            (data['receive_count'] < 10) &
+            (data['receive_count'] >= self.core_low_threshold) &
+            (data['receive_count'] < self.core_medium_threshold) &
             (~best_seller_mask)
         )
         segments[core_low_mask] = 'Core Low'
 
-        # New Arrivals: Recently received (matches rule-based: all items received in last 60 days)
+        # New Arrivals: Recently received (configurable days window)
         new_arrival_mask = (
-            (data['days_since_last_receive'] <= 60)
+            (data['days_since_last_receive'] <= self.new_arrivals_days)
         )
         segments[new_arrival_mask] = 'New Arrival'
 
-        # Clearance: Old inventory with no recent sales
+        # Clearance: Old inventory with no recent sales (configurable days threshold)
         clearance_mask = (
-            (data['days_since_last_sale'] > 180) &
+            (data['days_since_last_sale'] > self.clearance_days) &
             (data['units_sold_90d'] == 0) &
             (data['total_active_qty'] > 0)
         )
