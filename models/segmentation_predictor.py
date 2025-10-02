@@ -121,11 +121,9 @@ class SegmentationPredictor:
         )
         segments[core_low_mask] = 'Core Low'
 
-        # New Arrivals: Recently received
+        # New Arrivals: Recently received (matches rule-based: all items received in last 60 days)
         new_arrival_mask = (
-            (data['days_since_last_receive'] <= 60) &
-            (data['receive_count'] <= 2) &
-            (~best_seller_mask)
+            (data['days_since_last_receive'] <= 60)
         )
         segments[new_arrival_mask] = 'New Arrival'
 
@@ -175,7 +173,7 @@ class SegmentationPredictor:
                     MAX(i.category) as category,
                     MAX(i.vendor_name) as vendor_name,
                     MAX(i.gender) as gender,
-                    SUM(i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
+                    SUM(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) as total_active_qty,
                     AVG(i.order_cost::numeric) as avg_order_cost,
                     AVG(i.selling_price::numeric) as avg_selling_price,
                     AVG(CASE
@@ -183,7 +181,7 @@ class SegmentationPredictor:
                         THEN ((i.selling_price::numeric - i.order_cost::numeric) / i.selling_price::numeric * 100)
                         ELSE 0
                     END) as avg_margin_percent,
-                    SUM((i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) * i.order_cost::numeric) as inventory_value,
+                    SUM((COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) * i.order_cost::numeric) as inventory_value,
                     MAX(i.last_rcvd) as last_received,
                     COUNT(DISTINCT i.item_number) as receive_count
                 FROM item_list i
