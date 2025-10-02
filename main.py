@@ -69,6 +69,7 @@ class MLDataFilters(BaseModel):
     min_price: Optional[float] = 0
     max_price: Optional[float] = 99999
     min_inventory: Optional[int] = 0
+    max_inventory: Optional[int] = 99999
     exclude_zero_inventory: Optional[bool] = True
 
 class TrainingRequest(BaseModel):

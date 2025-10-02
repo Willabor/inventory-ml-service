@@ -85,6 +85,9 @@ class SegmentationPredictor:
         if self.filters.get('minInventory', 0) > 0:
             where_clauses.append(f"(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) >= {self.filters['minInventory']}")
 
+        if self.filters.get('maxInventory', 99999) < 99999:
+            where_clauses.append(f"(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) <= {self.filters['maxInventory']}")
+
         return where_clauses
 
     def _build_store_sum_clause(self) -> str:
