@@ -73,6 +73,7 @@ class MLDataFilters(BaseModel):
     exclude_zero_inventory: Optional[bool] = True
     include_receiving_history: Optional[bool] = False
     receiving_history_days: Optional[int] = 180
+    selected_features: Optional[List[str]] = []
 
 class TrainingRequest(BaseModel):
     days_back: int = 90

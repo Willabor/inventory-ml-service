@@ -172,6 +172,17 @@ class SegmentationPredictor:
             features['has_cost_volatility'] = (features['cost_volatility'] > 2.0).astype(int)
             features['high_reversal_risk'] = (features['reversal_rate'] > 0.1).astype(int)
 
+        # Filter features if specified
+        selected_features = self.filters.get('selectedFeatures', [])
+        if selected_features and len(selected_features) > 0:
+            # Only keep features that are in the selected list
+            available_features = [col for col in features.columns if col in selected_features]
+            if len(available_features) > 0:
+                features = features[available_features]
+                print(f"Filtered to {len(available_features)} selected features: {', '.join(available_features[:5])}{'...' if len(available_features) > 5 else ''}")
+            else:
+                print("Warning: No selected features found in feature set, using all features")
+
         return features
 
     def assign_rule_based_segments(self, data: pd.DataFrame) -> pd.Series:
