@@ -276,7 +276,7 @@ class SegmentationPredictor:
             base_where += " AND " + " AND ".join(where_clauses)
 
         # Get sales period from filters or use days_back
-        sales_period_days = self.filters.get('salesPeriodDays', days_back)
+        sales_period_days = self.filters.get('sales_period_days', days_back)
 
         print(f"Applied filters: {len(where_clauses)} conditions")
         print(f"Store sum clause: {store_sum[:50]}...")
