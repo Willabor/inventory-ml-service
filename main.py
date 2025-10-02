@@ -345,8 +345,11 @@ async def predict_product_segmentation():
                 detail="Segmentation model not loaded. Train a model first using /api/ml/train-segmentation"
             )
 
-        # Fetch product data from database
-        query = """
+        # Get model settings
+        sales_period_days = segmentation_model.filters.get('salesPeriodDays', 90)
+
+        # Fetch product data from database using model's trained settings
+        query = f"""
             WITH style_metrics AS (
                 SELECT
                     i.style_number,
@@ -376,7 +379,7 @@ async def predict_product_segmentation():
                 SELECT
                     i.style_number,
                     COUNT(*) FILTER (WHERE s.date >= CURRENT_DATE - INTERVAL '30 days') as units_sold_30d,
-                    COUNT(*) FILTER (WHERE s.date >= CURRENT_DATE - INTERVAL '90 days') as units_sold_90d,
+                    COUNT(*) FILTER (WHERE s.date >= CURRENT_DATE - INTERVAL '{sales_period_days} days') as units_sold_90d,
                     MAX(s.date) as last_sale_date
                 FROM sales_transactions s
                 JOIN item_list i ON s.sku = i.item_number
@@ -561,7 +564,7 @@ async def predict_product_segmentation():
                 "generatedDate": datetime.now().isoformat(),
                 "totalStyles": len(enriched_products),
                 "totalActiveInventoryValue": total_value,
-                "analysisDateRange": "Last 90 days",
+                "analysisDateRange": f"Last {sales_period_days} days",
                 "modelVersion": segmentation_model.model_version,
                 "mlPowered": True
             },
