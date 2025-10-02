@@ -8,6 +8,7 @@ from datetime import datetime
 
 from config import settings
 from models.transfer_predictor import TransferPredictor
+from models.segmentation_predictor import SegmentationPredictor
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -25,8 +26,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model instance (loaded on startup)
+# Global model instances (loaded on startup)
 transfer_model: Optional[TransferPredictor] = None
+segmentation_model: Optional[SegmentationPredictor] = None
 
 
 # Pydantic models for API
@@ -77,8 +79,8 @@ class HealthResponse(BaseModel):
 # Startup event
 @app.on_event("startup")
 async def startup_event():
-    """Load the latest model on service startup."""
-    global transfer_model
+    """Load the latest models on service startup."""
+    global transfer_model, segmentation_model
 
     print("=" * 60)
     print("STARTING ML SERVICE")
@@ -89,15 +91,27 @@ async def startup_event():
     print(f"Model Cache Dir: {settings.model_cache_dir}")
     print("=" * 60)
 
+    # Load transfer prediction model
     try:
         transfer_model = TransferPredictor.load_latest()
-        print("✓ Model loaded successfully")
+        print("✓ Transfer model loaded successfully")
         print(f"  Version: {transfer_model.model_version}")
     except FileNotFoundError:
-        print("⚠ No trained model found. Train a model using /api/ml/train endpoint")
+        print("⚠ No trained transfer model found. Train using /api/ml/train endpoint")
         transfer_model = None
     except Exception as e:
-        print(f"✗ Error loading model: {e}")
+        print(f"✗ Error loading transfer model: {e}")
+
+    # Load segmentation model
+    try:
+        segmentation_model = SegmentationPredictor.load_latest()
+        print("✓ Segmentation model loaded successfully")
+        print(f"  Version: {segmentation_model.model_version}")
+    except FileNotFoundError:
+        print("⚠ No trained segmentation model found. Train using /api/ml/train-segmentation endpoint")
+        segmentation_model = None
+    except Exception as e:
+        print(f"✗ Error loading segmentation model: {e}")
         import traceback
         traceback.print_exc()
         transfer_model = None
@@ -255,6 +269,267 @@ async def get_model_info():
         "metrics": transfer_model.metrics,
         "feature_count": len(transfer_model.feature_columns) if transfer_model.feature_columns else 0
     }
+
+
+# ==========================
+# PRODUCT SEGMENTATION ENDPOINTS
+# ==========================
+
+@app.post("/api/ml/train-segmentation")
+async def train_segmentation_model(request: TrainingRequest):
+    """Train the product segmentation model."""
+    global segmentation_model
+
+    try:
+        # Initialize new model
+        segmentation_model = SegmentationPredictor()
+
+        # Train the model
+        metrics = segmentation_model.train(days_back=request.days_back)
+
+        # Save model
+        segmentation_model.save_model()
+
+        return TrainingResponse(
+            success=True,
+            model_version=segmentation_model.model_version,
+            metrics=metrics,
+            training_date=segmentation_model.training_date.isoformat()
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
+
+@app.post("/api/ml/product-segmentation")
+async def predict_product_segmentation():
+    """Generate ML-powered product segmentation for Google Marketing."""
+    from utils.database import db
+
+    try:
+        if segmentation_model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Segmentation model not loaded. Train a model first using /api/ml/train-segmentation"
+            )
+
+        # Fetch product data from database
+        query = """
+            WITH style_metrics AS (
+                SELECT
+                    i.style_number,
+                    i.item_name,
+                    i.category,
+                    i.vendor_name,
+                    i.gender,
+                    (i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) as total_active_qty,
+                    AVG(i.order_cost::numeric) as avg_order_cost,
+                    AVG(i.selling_price::numeric) as avg_selling_price,
+                    AVG(CASE
+                        WHEN i.selling_price::numeric > 0
+                        THEN ((i.selling_price::numeric - i.order_cost::numeric) / i.selling_price::numeric * 100)
+                        ELSE 0
+                    END) as avg_margin_percent,
+                    SUM((i.avail_qty + i.hq_qty + i.gm_qty + i.hm_qty + i.nm_qty + i.lm_qty) * i.order_cost::numeric) as inventory_value,
+                    MAX(i.last_rcvd) as last_received,
+                    COUNT(DISTINCT i.item_number) as receive_count,
+                    i.style_number_2 as classification,
+                    'All-Season' as seasonal_pattern,
+                    'Normal' as stock_status
+                FROM item_list i
+                WHERE i.style_number IS NOT NULL
+                GROUP BY i.style_number, i.item_name, i.category, i.vendor_name, i.gender, i.style_number_2
+            ),
+            style_sales AS (
+                SELECT
+                    i.style_number,
+                    COUNT(*) FILTER (WHERE s.date >= CURRENT_DATE - INTERVAL '30 days') as units_sold_30d,
+                    COUNT(*) FILTER (WHERE s.date >= CURRENT_DATE - INTERVAL '90 days') as units_sold_90d,
+                    MAX(s.date) as last_sale_date
+                FROM sales_transactions s
+                JOIN item_list i ON s.sku = i.item_number
+                WHERE i.style_number IS NOT NULL
+                GROUP BY i.style_number
+            )
+            SELECT
+                sm.*,
+                COALESCE(ss.units_sold_30d, 0) as units_sold_30d,
+                COALESCE(ss.units_sold_90d, 0) as units_sold_90d,
+                COALESCE(ss.last_sale_date, NULL) as last_sale_date,
+                CASE
+                    WHEN ss.last_sale_date IS NOT NULL
+                    THEN CURRENT_DATE - ss.last_sale_date
+                    ELSE NULL
+                END as days_since_last_sale,
+                CASE
+                    WHEN sm.last_received IS NOT NULL
+                    THEN CURRENT_DATE - sm.last_received
+                    ELSE NULL
+                END as days_since_last_receive,
+                CASE
+                    WHEN sm.total_active_qty > 0
+                    THEN COALESCE(ss.units_sold_30d, 0)::numeric / 30.0
+                    ELSE 0
+                END as sales_velocity,
+                CASE
+                    WHEN sm.avg_selling_price > 0
+                    THEN sm.avg_selling_price - sm.avg_order_cost
+                    ELSE 0
+                END as margin_per_unit
+            FROM style_metrics sm
+            LEFT JOIN style_sales ss ON sm.style_number = ss.style_number
+            WHERE sm.total_active_qty > 0
+        """
+
+        data = db.query(query)
+
+        if data.empty:
+            return {
+                "metadata": {
+                    "generatedDate": datetime.now().isoformat(),
+                    "totalStyles": 0,
+                    "totalActiveInventoryValue": 0,
+                    "analysisDateRange": "No data",
+                    "modelVersion": segmentation_model.model_version,
+                    "mlPowered": True
+                },
+                "segments": {
+                    "bestSellers": [],
+                    "coreHighFrequency": [],
+                    "coreMediumFrequency": [],
+                    "coreLowFrequency": [],
+                    "nonCoreRepeat": [],
+                    "oneTimePurchase": [],
+                    "newArrivals": [],
+                    "summerItems": [],
+                    "winterItems": [],
+                    "clearanceCandidates": []
+                }
+            }
+
+        # Predict segments using ML model
+        results = segmentation_model.predict(data)
+
+        # Enrich with marketing data
+        def enrich_product(row):
+            # Generate Google-optimized product title
+            title_parts = []
+            if row.get('vendor_name'):
+                title_parts.append(row['vendor_name'])
+            title_parts.append(row['item_name'])
+            if row.get('category'):
+                title_parts.append(f"- {row['category']}")
+            product_title = " ".join(title_parts)[:150]  # Google limit
+
+            # Generate keywords
+            keywords = []
+            if row.get('vendor_name'):
+                keywords.append(row['vendor_name'].lower())
+            if row.get('category'):
+                keywords.append(row['category'].lower())
+            if row.get('gender'):
+                keywords.append(row['gender'].lower())
+            keywords.extend(row['item_name'].lower().split()[:5])
+
+            # Determine budget tier based on ML confidence + margin
+            confidence = row.get('ml_confidence', 0)
+            margin = row.get('avg_margin_percent', 0)
+            score = (confidence * 60) + (margin * 0.4)
+
+            if score >= 65:
+                budget_tier = 'High'
+                priority = 5
+            elif score >= 45:
+                budget_tier = 'Medium'
+                priority = 3
+            else:
+                budget_tier = 'Low'
+                priority = 1
+
+            # Map segment to Google category
+            category_map = {
+                'Apparel & Accessories': row.get('category', 'Apparel & Accessories'),
+                'default': 'Apparel & Accessories > Clothing'
+            }
+            google_category = category_map.get(row.get('category', ''), category_map['default'])
+
+            return {
+                'styleNumber': row['style_number'],
+                'itemName': row['item_name'],
+                'category': row.get('category'),
+                'vendorName': row.get('vendor_name'),
+                'gender': row.get('gender'),
+                'totalActiveQty': int(row.get('total_active_qty', 0)),
+                'avgOrderCost': float(row.get('avg_order_cost', 0)),
+                'avgSellingPrice': float(row.get('avg_selling_price', 0)),
+                'avgMarginPercent': float(row.get('avg_margin_percent', 0)),
+                'inventoryValue': float(row.get('inventory_value', 0)),
+                'classification': row.get('classification', 'Unknown'),
+                'seasonalPattern': row.get('seasonal_pattern', 'All-Season'),
+                'lastReceived': row.get('last_received').isoformat() if row.get('last_received') else None,
+                'daysSinceLastReceive': int(row.get('days_since_last_receive', 0)) if row.get('days_since_last_receive') else None,
+                'receiveCount': int(row.get('receive_count', 0)),
+                'stockStatus': row.get('stock_status', 'Normal'),
+                'unitsSold30d': int(row.get('units_sold_30d', 0)),
+                'unitsSold90d': int(row.get('units_sold_90d', 0)),
+                'salesVelocity': float(row.get('sales_velocity', 0)),
+                'lastSaleDate': row.get('last_sale_date').isoformat() if row.get('last_sale_date') else None,
+                'productTitle': product_title,
+                'keywords': keywords,
+                'googleCategory': google_category,
+                'priority': priority,
+                'budgetTier': budget_tier,
+                'segment': row['ml_segment'],
+                'marginPerUnit': float(row.get('margin_per_unit', 0)),
+            }
+
+        # Organize by ML-predicted segments
+        enriched_products = results.apply(enrich_product, axis=1).tolist()
+
+        # Group by segments
+        segments = {
+            'bestSellers': [p for p in enriched_products if p['segment'] == 'Best Seller'],
+            'coreHighFrequency': [p for p in enriched_products if p['segment'] == 'Core High'],
+            'coreMediumFrequency': [p for p in enriched_products if p['segment'] == 'Core Medium'],
+            'coreLowFrequency': [p for p in enriched_products if p['segment'] == 'Core Low'],
+            'nonCoreRepeat': [p for p in enriched_products if p['segment'] == 'Non-Core Repeat'],
+            'oneTimePurchase': [p for p in enriched_products if p['segment'] == 'One-Time'],
+            'newArrivals': [p for p in enriched_products if p['segment'] == 'New Arrival'],
+            'summerItems': [p for p in enriched_products if p['seasonalPattern'] == 'Summer'],
+            'winterItems': [p for p in enriched_products if p['seasonalPattern'] == 'Winter'],
+            'clearanceCandidates': [p for p in enriched_products if p['segment'] == 'Clearance'],
+        }
+
+        # Calculate metadata
+        total_value = sum(p['inventoryValue'] for p in enriched_products)
+
+        return {
+            "metadata": {
+                "generatedDate": datetime.now().isoformat(),
+                "totalStyles": len(enriched_products),
+                "totalActiveInventoryValue": total_value,
+                "analysisDateRange": "Last 90 days",
+                "modelVersion": segmentation_model.model_version,
+                "mlPowered": True
+            },
+            "segments": segments,
+            "mlInsights": {
+                "segmentConfidence": {
+                    seg: float(results[results['ml_segment'] == seg]['ml_confidence'].mean())
+                    for seg in results['ml_segment'].unique()
+                },
+                "recommendedActions": [
+                    f"Focus High budget tier on {len(segments['bestSellers'])} Best Sellers",
+                    f"Launch campaigns for {len(segments['newArrivals'])} New Arrivals",
+                    f"Clear {len(segments['clearanceCandidates'])} products with deep discounts"
+                ]
+            }
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
 
 
 # Main entry point (for local development only)
