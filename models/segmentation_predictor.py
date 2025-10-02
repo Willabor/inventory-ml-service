@@ -435,10 +435,22 @@ class SegmentationPredictor:
         if len(X_train_full) < 10:
             raise ValueError("Insufficient labeled data for training")
 
+        # Check if stratification is possible (all classes need >= 2 samples)
+        class_counts = y_train_full.value_counts()
+        min_class_count = class_counts.min()
+
         # Split for validation
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_train_full, y_train_full, test_size=0.2, random_state=42, stratify=y_train_full
-        )
+        if min_class_count >= 2:
+            # Use stratified split when all classes have >= 2 samples
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_train_full, y_train_full, test_size=0.2, random_state=42, stratify=y_train_full
+            )
+        else:
+            # Use simple random split when some classes have only 1 sample
+            print(f"⚠️  Some classes have only {min_class_count} sample(s), using non-stratified split")
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_train_full, y_train_full, test_size=0.2, random_state=42
+            )
 
         self.classification_model = RandomForestClassifier(
             n_estimators=100,
