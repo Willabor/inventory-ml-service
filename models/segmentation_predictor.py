@@ -157,6 +157,21 @@ class SegmentationPredictor:
         features['is_new_arrival'] = (features['days_since_last_receive'] <= 60).astype(int)
         features['is_high_frequency'] = (features['receive_count'] >= 40).astype(int)
 
+        # Receiving history features (optional)
+        if 'receiving_frequency' in data.columns:
+            features['receiving_frequency'] = data.get('receiving_frequency', 0).fillna(0)
+            features['total_receives'] = data.get('total_receives', 0).fillna(0)
+            features['avg_receiving_cost'] = data.get('avg_receiving_cost', 0).fillna(0)
+            features['cost_volatility'] = data.get('cost_volatility', 0).fillna(0)
+            features['reversal_rate'] = data.get('reversal_rate', 0).fillna(0)
+            features['avg_days_between_receives'] = data.get('avg_days_between_receives', 999).fillna(999)
+            features['days_since_last_receiving'] = data.get('days_since_last_receiving', 999).fillna(999)
+
+            # Receiving-based computed features
+            features['is_frequent_restock'] = (features['receiving_frequency'] >= 5).astype(int)
+            features['has_cost_volatility'] = (features['cost_volatility'] > 2.0).astype(int)
+            features['high_reversal_risk'] = (features['reversal_rate'] > 0.1).astype(int)
+
         return features
 
     def assign_rule_based_segments(self, data: pd.DataFrame) -> pd.Series:
@@ -256,6 +271,53 @@ class SegmentationPredictor:
         print(f"Store sum clause: {store_sum[:50]}...")
         print(f"Sales period: {sales_period_days} days")
 
+        # Build receiving history CTE if enabled
+        receiving_cte = ""
+        receiving_join = ""
+        receiving_columns = ""
+
+        if self.filters.get('includeReceivingHistory', False):
+            receiving_days = self.filters.get('receivingHistoryDays', 180)
+            receiving_cte = f"""
+            ,
+            receiving_metrics AS (
+                SELECT
+                    i.style_number,
+                    COUNT(DISTINCT rv.voucher_number) as receiving_frequency,
+                    COUNT(rl.id) as total_receives,
+                    SUM(rl.qty) as total_qty_received,
+                    AVG(rl.cost::numeric) as avg_receiving_cost,
+                    STDDEV(rl.cost::numeric) as cost_volatility,
+                    MAX(rv.date) as last_receiving_date,
+                    AVG(CASE WHEN rv.type = 'Reversal' THEN 1 ELSE 0 END) as reversal_rate,
+                    CASE
+                        WHEN COUNT(DISTINCT rv.date) > 1
+                        THEN EXTRACT(EPOCH FROM (MAX(rv.date) - MIN(rv.date))) / 86400.0 / NULLIF(COUNT(DISTINCT rv.date) - 1, 0)
+                        ELSE NULL
+                    END as avg_days_between_receives
+                FROM item_list i
+                JOIN receiving_lines rl ON i.item_number = rl.item_number
+                JOIN receiving_vouchers rv ON rl.voucher_id = rv.id
+                WHERE i.style_number IS NOT NULL
+                AND rv.date >= CURRENT_DATE - INTERVAL '{receiving_days} days'
+                GROUP BY i.style_number
+            )
+            """
+            receiving_join = "LEFT JOIN receiving_metrics rm ON sm.style_number = rm.style_number"
+            receiving_columns = """,
+                COALESCE(rm.receiving_frequency, 0) as receiving_frequency,
+                COALESCE(rm.total_receives, 0) as total_receives,
+                COALESCE(rm.total_qty_received, 0) as total_qty_received,
+                COALESCE(rm.avg_receiving_cost, 0) as avg_receiving_cost,
+                COALESCE(rm.cost_volatility, 0) as cost_volatility,
+                COALESCE(rm.reversal_rate, 0) as reversal_rate,
+                COALESCE(rm.avg_days_between_receives, 999) as avg_days_between_receives,
+                CASE
+                    WHEN rm.last_receiving_date IS NOT NULL
+                    THEN CURRENT_DATE - rm.last_receiving_date
+                    ELSE NULL
+                END as days_since_last_receiving"""
+
         # Fetch training data from database
         query = f"""
             WITH style_metrics AS (
@@ -291,7 +353,7 @@ class SegmentationPredictor:
                 WHERE i.style_number IS NOT NULL
                 AND s.date >= CURRENT_DATE - INTERVAL '{sales_period_days} days'
                 GROUP BY i.style_number
-            )
+            ){receiving_cte}
             SELECT
                 sm.*,
                 COALESCE(ss.units_sold_30d, 0) as units_sold_30d,
@@ -316,9 +378,10 @@ class SegmentationPredictor:
                     WHEN sm.avg_selling_price > 0
                     THEN sm.avg_selling_price - sm.avg_order_cost
                     ELSE 0
-                END as margin_per_unit
+                END as margin_per_unit{receiving_columns}
             FROM style_metrics sm
             LEFT JOIN style_sales ss ON sm.style_number = ss.style_number
+            {receiving_join}
             WHERE sm.total_active_qty > 0
         """.format(days_back=days_back)
 

@@ -71,6 +71,8 @@ class MLDataFilters(BaseModel):
     min_inventory: Optional[int] = 0
     max_inventory: Optional[int] = 99999
     exclude_zero_inventory: Optional[bool] = True
+    include_receiving_history: Optional[bool] = False
+    receiving_history_days: Optional[int] = 180
 
 class TrainingRequest(BaseModel):
     days_back: int = 90
