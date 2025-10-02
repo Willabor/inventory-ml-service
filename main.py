@@ -566,7 +566,16 @@ async def predict_product_segmentation():
                 "totalActiveInventoryValue": total_value,
                 "analysisDateRange": f"Last {sales_period_days} days",
                 "modelVersion": segmentation_model.model_version,
-                "mlPowered": True
+                "mlPowered": True,
+                "modelSettings": {
+                    "salesPeriodDays": sales_period_days,
+                    "newArrivalsDays": segmentation_model.new_arrivals_days,
+                    "bestSellerThreshold": segmentation_model.best_seller_threshold,
+                    "coreHighThreshold": segmentation_model.core_high_threshold,
+                    "coreMediumThreshold": segmentation_model.core_medium_threshold,
+                    "coreLowThreshold": segmentation_model.core_low_threshold,
+                    "clearanceDays": segmentation_model.clearance_days
+                }
             },
             "segments": segments,
             "mlInsights": {
