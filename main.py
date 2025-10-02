@@ -346,7 +346,7 @@ async def predict_product_segmentation():
             )
 
         # Get model settings
-        sales_period_days = segmentation_model.filters.get('salesPeriodDays', 90)
+        sales_period_days = segmentation_model.filters.get('sales_period_days', 90)
 
         # Fetch product data from database using model's trained settings
         query = f"""
