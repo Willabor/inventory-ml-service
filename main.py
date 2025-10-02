@@ -58,6 +58,19 @@ class TransferPredictionResponse(BaseModel):
     predictions: List[TransferPrediction]
 
 
+class MLDataFilters(BaseModel):
+    sales_period_days: Optional[int] = None
+    exclude_before: Optional[str] = None
+    included_categories: Optional[List[str]] = []
+    excluded_categories: Optional[List[str]] = []
+    included_stores: Optional[List[str]] = []
+    excluded_vendors: Optional[List[str]] = []
+    included_genders: Optional[List[str]] = []
+    min_price: Optional[float] = 0
+    max_price: Optional[float] = 99999
+    min_inventory: Optional[int] = 0
+    exclude_zero_inventory: Optional[bool] = True
+
 class TrainingRequest(BaseModel):
     days_back: int = 90
     new_arrivals_days: Optional[int] = 60
@@ -66,6 +79,7 @@ class TrainingRequest(BaseModel):
     core_medium_threshold: Optional[int] = 20
     core_low_threshold: Optional[int] = 6
     clearance_days: Optional[int] = 180
+    filters: Optional[Dict] = {}
 
 
 class TrainingResponse(BaseModel):
@@ -287,14 +301,15 @@ async def train_segmentation_model(request: TrainingRequest):
     global segmentation_model
 
     try:
-        # Initialize new model with custom thresholds
+        # Initialize new model with custom thresholds and filters
         segmentation_model = SegmentationPredictor(
             new_arrivals_days=request.new_arrivals_days,
             best_seller_threshold=request.best_seller_threshold,
             core_high_threshold=request.core_high_threshold,
             core_medium_threshold=request.core_medium_threshold,
             core_low_threshold=request.core_low_threshold,
-            clearance_days=request.clearance_days
+            clearance_days=request.clearance_days,
+            filters=request.filters
         )
 
         # Train the model

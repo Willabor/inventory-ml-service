@@ -32,7 +32,8 @@ class SegmentationPredictor:
         core_high_threshold: int = 40,
         core_medium_threshold: int = 20,
         core_low_threshold: int = 6,
-        clearance_days: int = 180
+        clearance_days: int = 180,
+        filters: Optional[Dict] = None
     ):
         self.cluster_model: Optional[KMeans] = None
         self.classification_model: Optional[RandomForestClassifier] = None
@@ -48,6 +49,62 @@ class SegmentationPredictor:
         self.core_medium_threshold = core_medium_threshold
         self.core_low_threshold = core_low_threshold
         self.clearance_days = clearance_days
+
+        # Data filters
+        self.filters = filters or {}
+
+    def _build_where_clauses(self) -> List[str]:
+        """Build SQL WHERE clauses from filters."""
+        where_clauses = []
+
+        # Category filters
+        if self.filters.get('includedCategories') and len(self.filters['includedCategories']) > 0:
+            categories = ', '.join([f"'{cat}'" for cat in self.filters['includedCategories']])
+            where_clauses.append(f"i.category IN ({categories})")
+
+        # Vendor filters (exclusion)
+        if self.filters.get('excludedVendors') and len(self.filters['excludedVendors']) > 0:
+            vendors = ', '.join([f"'{v}'" for v in self.filters['excludedVendors']])
+            where_clauses.append(f"i.vendor_name NOT IN ({vendors})")
+
+        # Gender filters
+        if self.filters.get('includedGenders') and len(self.filters['includedGenders']) > 0:
+            genders = ', '.join([f"'{g}'" for g in self.filters['includedGenders']])
+            where_clauses.append(f"i.gender IN ({genders})")
+
+        # Price filters
+        if self.filters.get('minPrice', 0) > 0:
+            where_clauses.append(f"i.selling_price >= {self.filters['minPrice']}")
+        if self.filters.get('maxPrice', 99999) < 99999:
+            where_clauses.append(f"i.selling_price <= {self.filters['maxPrice']}")
+
+        # Inventory filters
+        if self.filters.get('excludeZeroInventory', True):
+            where_clauses.append("(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) > 0")
+
+        if self.filters.get('minInventory', 0) > 0:
+            where_clauses.append(f"(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) >= {self.filters['minInventory']}")
+
+        return where_clauses
+
+    def _build_store_sum_clause(self) -> str:
+        """Build SUM clause for store quantities based on included stores."""
+        included_stores = self.filters.get('includedStores', ['GM', 'HM', 'NM', 'LM', 'HQ'])
+        store_mapping = {
+            'GM': 'i.gm_qty',
+            'HM': 'i.hm_qty',
+            'NM': 'i.nm_qty',
+            'LM': 'i.lm_qty',
+            'HQ': 'i.hq_qty'
+        }
+
+        included_columns = [f"COALESCE({store_mapping[store]}, 0)" for store in included_stores if store in store_mapping]
+
+        if not included_columns:
+            # Default to all stores if none selected
+            included_columns = ["COALESCE(i.gm_qty, 0)", "COALESCE(i.hm_qty, 0)", "COALESCE(i.nm_qty, 0)", "COALESCE(i.lm_qty, 0)", "COALESCE(i.hq_qty, 0)"]
+
+        return " + ".join(included_columns)
 
     def extract_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -180,8 +237,24 @@ class SegmentationPredictor:
         """
         print(f"Training segmentation model with {days_back} days of data...")
 
+        # Build filter clauses
+        where_clauses = self._build_where_clauses()
+        store_sum = self._build_store_sum_clause()
+
+        # Build WHERE clause for item_list
+        base_where = "i.style_number IS NOT NULL"
+        if where_clauses:
+            base_where += " AND " + " AND ".join(where_clauses)
+
+        # Get sales period from filters or use days_back
+        sales_period_days = self.filters.get('salesPeriodDays', days_back)
+
+        print(f"Applied filters: {len(where_clauses)} conditions")
+        print(f"Store sum clause: {store_sum[:50]}...")
+        print(f"Sales period: {sales_period_days} days")
+
         # Fetch training data from database
-        query = """
+        query = f"""
             WITH style_metrics AS (
                 SELECT
                     i.style_number,
@@ -189,7 +262,7 @@ class SegmentationPredictor:
                     MAX(i.category) as category,
                     MAX(i.vendor_name) as vendor_name,
                     MAX(i.gender) as gender,
-                    SUM(COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) as total_active_qty,
+                    SUM({store_sum}) as total_active_qty,
                     AVG(i.order_cost::numeric) as avg_order_cost,
                     AVG(i.selling_price::numeric) as avg_selling_price,
                     AVG(CASE
@@ -197,11 +270,11 @@ class SegmentationPredictor:
                         THEN ((i.selling_price::numeric - i.order_cost::numeric) / i.selling_price::numeric * 100)
                         ELSE 0
                     END) as avg_margin_percent,
-                    SUM((COALESCE(i.gm_qty, 0) + COALESCE(i.hm_qty, 0) + COALESCE(i.nm_qty, 0) + COALESCE(i.lm_qty, 0) + COALESCE(i.hq_qty, 0)) * i.order_cost::numeric) as inventory_value,
+                    SUM(({store_sum}) * i.order_cost::numeric) as inventory_value,
                     MAX(i.last_rcvd) as last_received,
                     COUNT(DISTINCT i.item_number) as receive_count
                 FROM item_list i
-                WHERE i.style_number IS NOT NULL
+                WHERE {base_where}
                 GROUP BY i.style_number
             ),
             style_sales AS (
@@ -213,7 +286,7 @@ class SegmentationPredictor:
                 FROM sales_transactions s
                 JOIN item_list i ON s.sku = i.item_number
                 WHERE i.style_number IS NOT NULL
-                AND s.date >= CURRENT_DATE - INTERVAL '{days_back} days'
+                AND s.date >= CURRENT_DATE - INTERVAL '{sales_period_days} days'
                 GROUP BY i.style_number
             )
             SELECT
